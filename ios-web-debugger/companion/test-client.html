@@ -3,32 +3,43 @@
 <head>
     <title>iOS Debug Test</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .device { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
-        .serial { font-family: monospace; color: #333; }
-        .connected { color: green; }
-        .disconnected { color: red; }
-        button { padding: 8px 16px; margin: 5px; }
-        #output { margin-top: 20px; }
-        pre { background: #f5f5f5; padding: 10px; overflow: auto; }
+        /* ... keep existing styles ... */
+        .console { 
+            background: #1e1e1e; 
+            color: #f8f8f2; 
+            padding: 10px; 
+            margin-top: 20px; 
+            border-radius: 5px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            height: 300px;
+            overflow-y: auto;
+        }
+        .log { color: #f8f8f2; }
+        .warn { color: #ffb86c; }
+        .error { color: #ff5555; }
+        .info { color: #8be9fd; }
     </style>
 </head>
 <body>
-    <h1>iOS Debug Companion Test</h1>
+    <h1>iOS Debug Companion</h1>
     
     <div>
         <button onclick="listDevices()">📱 List iOS Devices</button>
-        <button onclick="refreshDevices()">🔄 Refresh</button>
-        <button onclick="clearOutput()">🧹 Clear</button>
+        <button onclick="clearConsole()">🗑️ Clear Console</button>
     </div>
     
     <div id="deviceList"></div>
     
-    <h3>Raw Output:</h3>
-    <pre id="output">Ready. Click "List iOS Devices" to start.</pre>
+    <h3>Console Output:</h3>
+    <div id="console" class="console"></div>
+    
+    <h3>Raw Messages:</h3>
+    <pre id="output" style="height: 200px;"></pre>
 
     <script>
         const ws = new WebSocket('ws://localhost:9223/ws');
+        const consoleOutput = document.getElementById('console');
         const output = document.getElementById('output');
         const deviceList = document.getElementById('deviceList');
         
@@ -36,14 +47,28 @@
             const data = JSON.parse(event.data);
             output.textContent += '\n' + JSON.stringify(data, null, 2);
             
-            // Handle device list specially
-            if (data.type === 'devices') {
-                updateDeviceList(data.data);
+            // Handle different message types
+            switch(data.type) {
+                case 'devices':
+                    updateDeviceList(data.data);
+                    break;
+                case 'console':
+                    addConsoleLog(data.data, data.serial);
+                    break;
+                case 'connected':
+                    addConsoleLog(`✅ ${data.data}`, data.serial, 'info');
+                    break;
+                case 'error':
+                    addConsoleLog(`❌ ${data.data}`, null, 'error');
+                    break;
+                case 'info':
+                    addConsoleLog(`ℹ️ ${data.data}`, null, 'info');
+                    break;
             }
         };
         
         ws.onopen = () => {
-            output.textContent = 'Connected to iOS Debug Companion\n';
+            addConsoleLog('Connected to iOS Debug Companion', null, 'info');
         };
         
         function updateDeviceList(devices) {
@@ -57,39 +82,59 @@
             devices.forEach(device => {
                 const div = document.createElement('div');
                 div.className = 'device';
+                
+                // Check if connected
+                const isConnected = false; // TODO: Track connection state
+                
                 div.innerHTML = `
                     <div><strong>Serial:</strong> <span class="serial">${device.serial}</span></div>
-                    <div><strong>Status:</strong> <span class="connected">${device.messageType}</span></div>
+                    <div><strong>Status:</strong> ${device.messageType}</div>
                     <div><strong>Connection:</strong> ${device.connection}</div>
-                    <div><strong>Device ID:</strong> ${device.deviceId}</div>
-                    <button onclick="connectToDevice('${device.serial}')">Connect & Debug</button>
+                    <div>
+                        <button onclick="connectToDevice('${device.serial}')" ${isConnected ? 'disabled' : ''}>
+                            ${isConnected ? '✅ Connected' : '🔌 Connect & Debug'}
+                        </button>
+                        ${isConnected ? '<button onclick="disconnectDevice(\'' + device.serial + '\')">Disconnect</button>' : ''}
+                    </div>
                 `;
                 deviceList.appendChild(div);
             });
         }
         
-        function listDevices() {
-            ws.send(JSON.stringify({command: 'refreshDevices'}));
-        }
-        
-        function refreshDevices() {
-            ws.send(JSON.stringify({command: 'refreshDevices'}));
+        function addConsoleLog(message, deviceSerial, type = 'log') {
+            const div = document.createElement('div');
+            div.className = type;
+            div.innerHTML = `[${new Date().toLocaleTimeString()}] ${deviceSerial ? `[${deviceSerial}] ` : ''}${message}`;
+            consoleOutput.appendChild(div);
+            consoleOutput.scrollTop = consoleOutput.scrollHeight;
         }
         
         function connectToDevice(serial) {
-            output.textContent += `\nAttempting to connect to device: ${serial}\n`;
+            addConsoleLog(`Connecting to ${serial}...`, null, 'info');
             ws.send(JSON.stringify({
                 command: 'connect',
                 serial: serial
             }));
         }
         
-        function clearOutput() {
-            output.textContent = 'Output cleared.\n';
+        function disconnectDevice(serial) {
+            ws.send(JSON.stringify({
+                command: 'disconnect',
+                serial: serial
+            }));
         }
         
-        // Auto-refresh every 30 seconds
-        setInterval(refreshDevices, 30000);
+        function listDevices() {
+            ws.send(JSON.stringify({command: 'refreshDevices'}));
+        }
+        
+        function clearConsole() {
+            consoleOutput.innerHTML = '';
+            output.textContent = '';
+        }
+        
+        // Auto-refresh device list every 30 seconds
+        setInterval(listDevices, 30000);
     </script>
 </body>
 </html>
