@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>iOS Debug Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .device { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+        .serial { font-family: monospace; color: #333; }
+        .connected { color: green; }
+        .disconnected { color: red; }
+        button { padding: 8px 16px; margin: 5px; }
+        #output { margin-top: 20px; }
+        pre { background: #f5f5f5; padding: 10px; overflow: auto; }
+    </style>
+</head>
+<body>
+    <h1>iOS Debug Companion Test</h1>
+    
+    <div>
+        <button onclick="listDevices()">📱 List iOS Devices</button>
+        <button onclick="refreshDevices()">🔄 Refresh</button>
+        <button onclick="clearOutput()">🧹 Clear</button>
+    </div>
+    
+    <div id="deviceList"></div>
+    
+    <h3>Raw Output:</h3>
+    <pre id="output">Ready. Click "List iOS Devices" to start.</pre>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:9223/ws');
+        const output = document.getElementById('output');
+        const deviceList = document.getElementById('deviceList');
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            output.textContent += '\n' + JSON.stringify(data, null, 2);
+            
+            // Handle device list specially
+            if (data.type === 'devices') {
+                updateDeviceList(data.data);
+            }
+        };
+        
+        ws.onopen = () => {
+            output.textContent = 'Connected to iOS Debug Companion\n';
+        };
+        
+        function updateDeviceList(devices) {
+            deviceList.innerHTML = '<h3>Connected Devices:</h3>';
+            
+            if (devices.length === 0) {
+                deviceList.innerHTML += '<p>No iOS devices found. Connect a device via USB.</p>';
+                return;
+            }
+            
+            devices.forEach(device => {
+                const div = document.createElement('div');
+                div.className = 'device';
+                div.innerHTML = `
+                    <div><strong>Serial:</strong> <span class="serial">${device.serial}</span></div>
+                    <div><strong>Status:</strong> <span class="connected">${device.messageType}</span></div>
+                    <div><strong>Connection:</strong> ${device.connection}</div>
+                    <div><strong>Device ID:</strong> ${device.deviceId}</div>
+                    <button onclick="connectToDevice('${device.serial}')">Connect & Debug</button>
+                `;
+                deviceList.appendChild(div);
+            });
+        }
+        
+        function listDevices() {
+            ws.send(JSON.stringify({command: 'refreshDevices'}));
+        }
+        
+        function refreshDevices() {
+            ws.send(JSON.stringify({command: 'refreshDevices'}));
+        }
+        
+        function connectToDevice(serial) {
+            output.textContent += `\nAttempting to connect to device: ${serial}\n`;
+            ws.send(JSON.stringify({
+                command: 'connect',
+                serial: serial
+            }));
+        }
+        
+        function clearOutput() {
+            output.textContent = 'Output cleared.\n';
+        }
+        
+        // Auto-refresh every 30 seconds
+        setInterval(refreshDevices, 30000);
+    </script>
+</body>
+</html>
