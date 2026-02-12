@@ -17,9 +17,21 @@ func StartMonitoring() {
 		} else {
 			devices := deviceList.DeviceList
 			
-			fmt.Printf("Found %d iOS device(s)\n", len(devices))
+			// Deduplicate by serial number
+			seen := make(map[string]bool)
+			var uniqueDevices []ios.DeviceEntry
 			
-			for i, deviceEntry := range devices {
+			for _, deviceEntry := range devices {
+				serial := deviceEntry.Properties.SerialNumber
+				if !seen[serial] {
+					seen[serial] = true
+					uniqueDevices = append(uniqueDevices, deviceEntry)
+				}
+			}
+			
+			fmt.Printf("Found %d iOS device(s)\n", len(uniqueDevices))
+			
+			for i, deviceEntry := range uniqueDevices {
 				fmt.Printf("  %d. Serial: %s\n", 
 					i+1, 
 					deviceEntry.Properties.SerialNumber)

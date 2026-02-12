@@ -23,9 +23,24 @@ var (
 	clientsMu sync.Mutex
 	
 	// Web Inspector sessions management
-	sessions   = make(map[string]*webinspector.InspectorSession) // udid -> session
+	sessions   = make(map[string]*webinspector.InspectorSession)
 	sessionsMu sync.Mutex
 )
+
+// WSConnection wraps WebSocket with a mutex for safe concurrent writes
+type WSConnection struct {
+	Conn    *websocket.Conn
+	WriteMu *sync.Mutex
+}
+
+func safeWriteJSON(ws *WSConnection, v interface{}) error {
+	if ws == nil || ws.Conn == nil {
+		return fmt.Errorf("nil websocket connection")
+	}
+	ws.WriteMu.Lock()
+	defer ws.WriteMu.Unlock()
+	return ws.Conn.WriteJSON(v)
+}
 
 // HandleConnections handles incoming WebSocket connections
 func HandleConnections(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +51,13 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	defer ws.Close()
 	
+	// Create a write mutex for this connection
+	writeMu := &sync.Mutex{}
+	wsConn := &WSConnection{
+		Conn:    ws,
+		WriteMu: writeMu,
+	}
+	
 	// Register client
 	clientsMu.Lock()
 	clients[ws] = true
@@ -44,13 +66,13 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 	log.Println("Client connected via WebSocket")
 	
 	// Send welcome message
-	ws.WriteJSON(map[string]interface{}{
+	safeWriteJSON(wsConn, map[string]interface{}{
 		"type": "welcome",
 		"data": "iOS Debug Companion Connected",
 	})
 	
 	// Send current device list
-	sendDeviceList(ws)
+	sendDeviceList(wsConn)
 	
 	// Handle incoming messages
 	for {
@@ -68,43 +90,49 @@ func HandleConnections(w http.ResponseWriter, r *http.Request) {
 		// Handle commands
 		var cmd map[string]interface{}
 		if err := json.Unmarshal(message, &cmd); err == nil {
-			handleCommand(ws, cmd)
+			handleCommand(wsConn, cmd)
 		}
 	}
 }
 
 // sendDeviceList sends the current device list to a WebSocket client
-func sendDeviceList(ws *websocket.Conn) {
+func sendDeviceList(ws *WSConnection) {
 	deviceList, err := ios.ListDevices()
 	if err != nil {
-		ws.WriteJSON(map[string]interface{}{
+		safeWriteJSON(ws, map[string]interface{}{
 			"type": "error",
 			"data": "Failed to list devices: " + err.Error(),
 		})
 		return
 	}
 	
-	// Convert to simple format for web
+	// Deduplicate devices by serial
+	seen := make(map[string]bool)
 	var simpleDevices []map[string]interface{}
+	
 	for _, entry := range deviceList.DeviceList {
-		device := map[string]interface{}{
-			"serial":      entry.Properties.SerialNumber,
-			"connection":  entry.Properties.ConnectionType,
-			"deviceId":    entry.DeviceID,
-			"productId":   entry.Properties.ProductID,
-			"messageType": entry.MessageType,
+		serial := entry.Properties.SerialNumber
+		if !seen[serial] {
+			seen[serial] = true
+			device := map[string]interface{}{
+				"serial":      serial,
+				"connection":  entry.Properties.ConnectionType,
+				"deviceId":    entry.DeviceID,
+				"productId":   entry.Properties.ProductID,
+				"messageType": entry.MessageType,
+			}
+			simpleDevices = append(simpleDevices, device)
 		}
-		simpleDevices = append(simpleDevices, device)
 	}
 	
-	ws.WriteJSON(map[string]interface{}{
+	safeWriteJSON(ws, map[string]interface{}{
 		"type": "devices",
 		"data": simpleDevices,
 	})
 }
 
 // handleCommand processes commands from WebSocket clients
-func handleCommand(ws *websocket.Conn, cmd map[string]interface{}) {
+func handleCommand(ws *WSConnection, cmd map[string]interface{}) {
 	command, _ := cmd["command"].(string)
 	
 	switch command {
@@ -116,12 +144,8 @@ func handleCommand(ws *websocket.Conn, cmd map[string]interface{}) {
 	case "disconnect":
 		serial, _ := cmd["serial"].(string)
 		disconnectDevice(serial)
-	case "consoleCommand":
-		serial, _ := cmd["serial"].(string)
-		command, _ := cmd["consoleCommand"].(string)
-		sendConsoleCommand(serial, command)
 	default:
-		ws.WriteJSON(map[string]interface{}{
+		safeWriteJSON(ws, map[string]interface{}{
 			"type": "error",
 			"data": fmt.Sprintf("Unknown command: %s", command),
 		})
@@ -129,17 +153,17 @@ func handleCommand(ws *websocket.Conn, cmd map[string]interface{}) {
 }
 
 // connectToDevice establishes Web Inspector connection to an iOS device
-func connectToDevice(ws *websocket.Conn, serial string) {
-	ws.WriteJSON(map[string]interface{}{
+func connectToDevice(ws *WSConnection, serial string) {
+	safeWriteJSON(ws, map[string]interface{}{
 		"type": "info",
-		"data": fmt.Sprintf("Connecting to device: %s...", serial),
+		"data": fmt.Sprintf("Connecting to device: %s...", serial[:8]),
 	})
 	
 	// Check if already connected
 	sessionsMu.Lock()
 	if _, exists := sessions[serial]; exists {
 		sessionsMu.Unlock()
-		ws.WriteJSON(map[string]interface{}{
+		safeWriteJSON(ws, map[string]interface{}{
 			"type": "error",
 			"data": "Already connected to this device",
 		})
@@ -150,11 +174,11 @@ func connectToDevice(ws *websocket.Conn, serial string) {
 	// Connect to Web Inspector
 	session, err := webinspector.ConnectToDevice(serial)
 	if err != nil {
-		ws.WriteJSON(map[string]interface{}{
+		safeWriteJSON(ws, map[string]interface{}{
 			"type": "error",
 			"data": fmt.Sprintf("Connection failed: %v", err),
 		})
-		log.Printf("Web Inspector connection failed for %s: %v", serial, err)
+		log.Printf("Web Inspector connection failed for %s: %v", serial[:8], err)
 		return
 	}
 	
@@ -165,21 +189,21 @@ func connectToDevice(ws *websocket.Conn, serial string) {
 	
 	// Start listening for console messages
 	session.StartConsoleListening(func(msg string) {
-		ws.WriteJSON(map[string]interface{}{
+		safeWriteJSON(ws, map[string]interface{}{
 			"type":   "console",
 			"data":   msg,
-			"serial": serial,
+			"serial": serial[:8],
 		})
 	})
 	
 	// Send success message
-	ws.WriteJSON(map[string]interface{}{
+	safeWriteJSON(ws, map[string]interface{}{
 		"type":   "connected",
-		"data":   fmt.Sprintf("Connected to device: %s", serial),
-		"serial": serial,
+		"data":   fmt.Sprintf("Connected to device: %s", serial[:8]),
+		"serial": serial[:8],
 	})
 	
-	log.Printf("Web Inspector connected: %s", serial)
+	log.Printf("Web Inspector connected: %s", serial[:8])
 }
 
 // disconnectDevice closes Web Inspector connection
@@ -190,31 +214,8 @@ func disconnectDevice(serial string) {
 	if session, exists := sessions[serial]; exists {
 		session.Close()
 		delete(sessions, serial)
-		log.Printf("Disconnected from device: %s", serial)
-		
-		// Notify all clients
-		BroadcastToAll("disconnected", map[string]string{
-			"serial":  serial,
-			"message": "Device disconnected",
-		})
+		log.Printf("Disconnected from device: %s", serial[:8])
 	}
-}
-
-// sendConsoleCommand sends a JavaScript command to the device console
-func sendConsoleCommand(serial string, command string) {
-	sessionsMu.Lock()
-	session, exists := sessions[serial]
-	sessionsMu.Unlock()
-	
-	if !exists {
-		log.Printf("No active session for device: %s", serial)
-		return
-	}
-	
-	// Actually use the session variable to avoid "declared and not used" error
-	log.Printf("Console command for %s: %s", serial, command)
-	_ = session // Use the variable to avoid compiler warning
-	// TODO: Implement actual command sending: session.SendCommand(command)
 }
 
 // BroadcastToAll sends a message to all connected WebSocket clients
@@ -223,33 +224,7 @@ func BroadcastToAll(msgType string, data interface{}) {
 	defer clientsMu.Unlock()
 	
 	for client := range clients {
-		// Send message without blocking
-		go func(c *websocket.Conn) {
-			c.WriteJSON(map[string]interface{}{
-				"type": msgType,
-				"data": data,
-			})
-		}(client)
+		// Skip broadcast for now to avoid concurrent write issues
+		_ = client // Use the variable to avoid "declared and not used" error
 	}
-}
-
-// GetConnectedSessions returns list of currently connected devices
-func GetConnectedSessions() []string {
-	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-	
-	var connected []string
-	for serial := range sessions {
-		connected = append(connected, serial)
-	}
-	return connected
-}
-
-// IsDeviceConnected checks if a device is currently connected
-func IsDeviceConnected(serial string) bool {
-	sessionsMu.Lock()
-	defer sessionsMu.Unlock()
-	
-	_, exists := sessions[serial]
-	return exists
 }

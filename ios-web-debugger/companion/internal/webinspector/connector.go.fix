@@ -1,0 +1,13 @@
+// Add this to listenForMessages() function:
+
+case "Page.frameNavigated":
+    var params struct {
+        Frame struct {
+            URL   string `json:"url"`
+            Title string `json:"title"`
+        } `json:"frame"`
+    }
+    if err := json.Unmarshal(msg, &params); err == nil {
+        s.consoleChan <- fmt.Sprintf("🌐 Navigated to: %s", params.Frame.Title)
+        s.consoleChan <- fmt.Sprintf("🔗 %s", params.Frame.URL)
+    }

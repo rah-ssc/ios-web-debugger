@@ -3,39 +3,64 @@
 <head>
     <title>iOS Debug Test</title>
     <style>
-        /* ... keep existing styles ... */
+        body { font-family: Arial, sans-serif; margin: 20px; background: #1e1e1e; color: #fff; }
+        .device { border: 1px solid #444; padding: 15px; margin: 10px 0; border-radius: 8px; background: #2d2d2d; }
+        .serial { font-family: monospace; color: #6a9fb5; }
         .console { 
-            background: #1e1e1e; 
+            background: #0d0d0d; 
             color: #f8f8f2; 
-            padding: 10px; 
+            padding: 15px; 
             margin-top: 20px; 
-            border-radius: 5px;
+            border-radius: 8px;
             font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 12px;
-            height: 300px;
+            font-size: 13px;
+            height: 400px;
             overflow-y: auto;
+            border: 1px solid #444;
         }
         .log { color: #f8f8f2; }
         .warn { color: #ffb86c; }
         .error { color: #ff5555; }
         .info { color: #8be9fd; }
+        button { 
+            background: #4a9eff; 
+            color: white; 
+            border: none; 
+            padding: 8px 16px; 
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background: #6aafff; }
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .connected { background: #28a745; color: white; }
+        .disconnected { background: #dc3545; color: white; }
     </style>
 </head>
 <body>
-    <h1>iOS Debug Companion</h1>
+    <h1>📱 iOS Web Inspector Debugger</h1>
     
     <div>
-        <button onclick="listDevices()">📱 List iOS Devices</button>
-        <button onclick="clearConsole()">🗑️ Clear Console</button>
+        <button onclick="listDevices()">🔍 List iOS Devices</button>
+        <button onclick="clearConsole()">🧹 Clear Console</button>
     </div>
     
     <div id="deviceList"></div>
     
-    <h3>Console Output:</h3>
-    <div id="console" class="console"></div>
+    <h2>📋 Safari Console Output</h2>
+    <div id="console" class="console">
+        <div style="color: #6a9fb5;">⏳ Waiting for device connection...</div>
+    </div>
     
-    <h3>Raw Messages:</h3>
-    <pre id="output" style="height: 200px;"></pre>
+    <h3>📡 Raw Protocol Messages:</h3>
+    <pre id="output" style="background: #0d0d0d; color: #ccc; padding: 10px; height: 200px; overflow-y: auto;"></pre>
 
     <script>
         const ws = new WebSocket('ws://localhost:9223/ws');
@@ -45,9 +70,9 @@
         
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            output.textContent += '\n' + JSON.stringify(data, null, 2);
+            output.innerHTML += '\n📨 ' + JSON.stringify(data, null, 2).substring(0, 500);
+            output.scrollTop = output.scrollHeight;
             
-            // Handle different message types
             switch(data.type) {
                 case 'devices':
                     updateDeviceList(data.data);
@@ -58,8 +83,11 @@
                 case 'connected':
                     addConsoleLog(`✅ ${data.data}`, data.serial, 'info');
                     break;
+                case 'disconnected':
+                    addConsoleLog(`❌ ${data.data}`, data.serial, 'error');
+                    break;
                 case 'error':
-                    addConsoleLog(`❌ ${data.data}`, null, 'error');
+                    addConsoleLog(`⚠️ ${data.data}`, null, 'error');
                     break;
                 case 'info':
                     addConsoleLog(`ℹ️ ${data.data}`, null, 'info');
@@ -68,33 +96,38 @@
         };
         
         ws.onopen = () => {
-            addConsoleLog('Connected to iOS Debug Companion', null, 'info');
+            addConsoleLog('🔌 Connected to iOS Debug Companion', null, 'info');
         };
         
         function updateDeviceList(devices) {
-            deviceList.innerHTML = '<h3>Connected Devices:</h3>';
+            deviceList.innerHTML = '<h3>📱 Connected iOS Devices:</h3>';
             
             if (devices.length === 0) {
-                deviceList.innerHTML += '<p>No iOS devices found. Connect a device via USB.</p>';
+                deviceList.innerHTML += '<p>No iOS devices found. Connect via USB and enable Web Inspector.</p>';
                 return;
             }
             
             devices.forEach(device => {
                 const div = document.createElement('div');
                 div.className = 'device';
-                
-                // Check if connected
-                const isConnected = false; // TODO: Track connection state
-                
                 div.innerHTML = `
-                    <div><strong>Serial:</strong> <span class="serial">${device.serial}</span></div>
-                    <div><strong>Status:</strong> ${device.messageType}</div>
-                    <div><strong>Connection:</strong> ${device.connection}</div>
-                    <div>
-                        <button onclick="connectToDevice('${device.serial}')" ${isConnected ? 'disabled' : ''}>
-                            ${isConnected ? '✅ Connected' : '🔌 Connect & Debug'}
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>${device.serial.substring(0, 12)}...</strong>
+                            <span class="serial">(${device.connection})</span>
+                        </div>
+                        <span class="status-badge disconnected" id="status-${device.serial}">🔴 Disconnected</span>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button onclick="connectToDevice('${device.serial}')" id="connect-${device.serial}">
+                            🔌 Connect Web Inspector
                         </button>
-                        ${isConnected ? '<button onclick="disconnectDevice(\'' + device.serial + '\')">Disconnect</button>' : ''}
+                        <button onclick="disconnectDevice('${device.serial}')" id="disconnect-${device.serial}" style="display: none;">
+                            ❌ Disconnect
+                        </button>
+                    </div>
+                    <div style="margin-top: 5px; color: #aaa; font-size: 12px;">
+                        Web Inspector: <span style="color: #ffb86c;">Enable in iOS Settings → Safari → Advanced</span>
                     </div>
                 `;
                 deviceList.appendChild(div);
@@ -104,17 +137,25 @@
         function addConsoleLog(message, deviceSerial, type = 'log') {
             const div = document.createElement('div');
             div.className = type;
-            div.innerHTML = `[${new Date().toLocaleTimeString()}] ${deviceSerial ? `[${deviceSerial}] ` : ''}${message}`;
+            const timestamp = new Date().toLocaleTimeString();
+            div.innerHTML = `[${timestamp}] ${deviceSerial ? `<span style="color: #6a9fb5;">[${deviceSerial.substr(0, 8)}]</span> ` : ''}${message}`;
             consoleOutput.appendChild(div);
             consoleOutput.scrollTop = consoleOutput.scrollHeight;
         }
         
         function connectToDevice(serial) {
-            addConsoleLog(`Connecting to ${serial}...`, null, 'info');
+            addConsoleLog(`🔌 Connecting to ${serial.substr(0, 8)}...`, null, 'info');
             ws.send(JSON.stringify({
                 command: 'connect',
                 serial: serial
             }));
+            
+            // Update UI
+            document.getElementById(`connect-${serial}`).style.display = 'none';
+            document.getElementById(`disconnect-${serial}`).style.display = 'inline-block';
+            const status = document.getElementById(`status-${serial}`);
+            status.innerHTML = '🟢 Connected';
+            status.className = 'status-badge connected';
         }
         
         function disconnectDevice(serial) {
@@ -122,6 +163,13 @@
                 command: 'disconnect',
                 serial: serial
             }));
+            
+            // Update UI
+            document.getElementById(`connect-${serial}`).style.display = 'inline-block';
+            document.getElementById(`disconnect-${serial}`).style.display = 'none';
+            const status = document.getElementById(`status-${serial}`);
+            status.innerHTML = '🔴 Disconnected';
+            status.className = 'status-badge disconnected';
         }
         
         function listDevices() {
@@ -130,7 +178,7 @@
         
         function clearConsole() {
             consoleOutput.innerHTML = '';
-            output.textContent = '';
+            output.innerHTML = '';
         }
         
         // Auto-refresh device list every 30 seconds
